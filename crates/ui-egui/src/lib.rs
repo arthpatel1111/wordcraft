@@ -47,6 +47,7 @@ pub mod dialogs_refs;
 pub mod dialogs_review;
 pub mod dialogs_ribbon;
 pub mod dialogs_smart_art;
+pub mod dialogs_table_style;
 pub mod dialogs_templates;
 pub mod equation_tab;
 /// The built-in file browser, for desktops without a system file dialog (#576).
@@ -70,6 +71,7 @@ pub mod print_page;
 pub mod printing;
 pub mod read_aloud;
 pub mod ribbon;
+pub mod ruler_tabs;
 pub mod scroll;
 pub mod system_clipboard;
 pub mod table_mouse;
@@ -1308,6 +1310,12 @@ impl WordApp {
             }
             "ui.dialog" => {
                 self.dialog = dialogs::Dialog::open(s("name").unwrap_or(""), self);
+                // New / Modify Table Style can open on a part (`"part": "firstRow"`…).
+                if let Some(dialogs::Dialog::TableStyle { region, .. }) = &mut self.dialog
+                    && let Some(part) = s("part").and_then(wordcraft_engine::cmd::table_style::part_named)
+                {
+                    *region = dialogs_table_style::part_index(part);
+                }
                 json!({"dialog": self.dialog.as_ref().map(|d| d.name())})
             }
             "ui.closeDialog" => {
