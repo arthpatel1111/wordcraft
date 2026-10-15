@@ -653,8 +653,8 @@ struct Ctx<'a> {
     /// The width a top-level table's percentage width is a share of, when it isn't the box's:
     /// an inherited header or footer's tables follow the section that defines it.
     pct_base: Option<f32>,
-    /// Body blocks that are empty paragraphs carrying only a section break before a continuous
-    /// section, in order: they take no room (see [`place_para`]).
+    /// Empty body paragraphs with hidden marks or continuous section breaks, in order:
+    /// they take no room (see [`place_para`]).
     quiet_marks: Vec<usize>,
     /// Whether even pages are mirrored (mirrored margins, on pages): see [`mirror_even_pages`].
     mirror: bool,
@@ -2036,6 +2036,16 @@ fn layout_pass(
         .map(|w| w[0].0)
         .filter(|end| doc.body.get(*end).and_then(|b| b.as_para()).is_some_and(|p| p.text.is_empty()))
         .collect();
+    if !opts.show_hidden {
+        ctx.quiet_marks.extend(
+            doc.body
+                .iter()
+                .enumerate()
+                .filter_map(|(i, b)| b.as_para().filter(|p| p.mark.hidden == Some(true) && p.plain_text().is_empty()).map(|_| i)),
+        );
+    }
+    ctx.quiet_marks.sort_unstable();
+    ctx.quiet_marks.dedup();
     let outline = (opts.view == ViewMode::Outline).then(|| OutlinePass::new(doc, opts.outline.clone().unwrap_or_default()));
     let default_sect = SectionProps::default();
     let mut web_sect;
@@ -3678,6 +3688,19 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
         pb.y += row.height;
         pb.content_bottom = pb.content_bottom.max(pb.y);
     };
+    // Like Word, repeated header rows don't stay alone at the bottom of a page: when the first row
+    // after them can't start under them there, the table starts on the next page.
+    let first = header_rows.len();
+    if !header_rows.is_empty()
+        && !pb.at_top()
+        && let Some(row) = tl.rows.get(first)
+    {
+        let room = pb.bottom - pb.y - tl.rows.iter().take(first).map(|r| r.height).sum::<f32>();
+        let splittable = !t.rows.get(first).is_some_and(|r| r.props.cant_split);
+        if row.height > room + 0.01 && !(splittable && table::split_row(row, room).is_some()) {
+            pb.advance(block, body_top);
+        }
+    }
     for (ri, row) in tl.rows.iter().enumerate() {
         // Word never splits a row of an exact height: it moves on whole.
         let splittable = !header_rows.contains(&ri)
