@@ -59,6 +59,7 @@ Document title opens Rename Document; the account badge opens Options › Genera
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | trivial | New/Modify Table Style: No Border on a part that inherits its lines hides them; emptying the font box makes the part's font inherited again (#1288) |
 | 2026-10-14 | trivial | Tab stops edited on the ruler: corner kind selector, click to set, drag to move or off to clear, per-kind markers mirrored for RTL; each gesture one `para.tabs` call and one undo step; Rulers 85% → 90% |
 | 2026-10-12 | trivial | Tables on the page: one selected cell (Select Cell, or a click along its left edge) is a cell selection when its border is dragged: the border moves in its row only (#962) |
 | 2026-10-12 | minor | Default keyboard shortcuts expanded to 140 commands on macOS (169 combinations) and 158 on Linux/Windows (188 combinations): Style Inspector (Shift+F1), Macros (Alt+F8), Strikethrough (Mod+Shift+X), Find Next (Shift+F4), Copy/Paste Insert keys (Mod+Insert, Shift+Insert), Go Back (Mod+Alt+Z), File Open/Save/Save As/Print (Mod+Alt+F2, Alt+Shift+F2, Alt+F2, Mod+Alt+I), Field navigation (Alt+F1, Alt+Shift+F1), Outline show first line (Alt+Shift+L), Next Footnote (Alt+Shift+>), Link to Previous (Alt+Shift+R), AutoText (Alt+F3), Spelling on Mac (Mod+Alt+L) |
@@ -114,6 +115,7 @@ Document title opens Rename Document; the account badge opens Options › Genera
 | 2026-10-11 | trivial | Quick Access Toolbar KeyTips (#620): 1–9, zero-prefixed numbers for longer toolbars, disabled commands stay disabled, Escape cancels, badge keystrokes never type into the document; persisted File › Options switch |
 | 2026-10-11 | trivial | Ribbon buttons that run a command (alignment, Bold, styles…) hand keyboard focus back to the document, so typing continues without another click; they also report their name and enabled state to screen readers (#686) |
 | 2026-10-12 | trivial | Keytips use Word for Windows' tab letters, as observed there: File F (opens the Backstage), Design G, References S, Review R, View W, Help Y (were L, R, S, V and none) |
+| 2026-10-12 | trivial | Comments: comment text and author names in a script the interface fonts lack (Arabic, Hebrew, and the rest; CJK via the CJK UI font) are drawn with a fallback face in the balloons and Comments pane instead of boxes; read-only balloons show right-to-left text in reading order (words, bidi runs and brackets), set against the right edge |
 | 2026-10-13 | trivial | Keytips reach the contextual table tabs with Word's two-letter badges: Alt, J, T opens Table Design and Alt, J, L Table Layout; after J only the J badges stay (#1183) |
 | 2026-10-12 | trivial | Shift+F10 opens the page's context menu below the caret, with the spelling suggestions and synonyms for the word there; `ui.contextMenu` for agents (#821). The Menu key itself isn't passed on by the windowing layer yet |
 | 2026-10-12 | trivial | Search: Alt+Q (and Alt, Q) opens the Search box from anywhere, as in Word; the key's own "q" isn't typed; every word of a query matches, so "insert table" finds Insert › Tables › Table; `tools.search` lists matches for agents (#819) |
