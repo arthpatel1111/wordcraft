@@ -689,6 +689,59 @@ fn page_break_char_starts_new_page() {
 }
 
 #[test]
+fn a_bookmark_after_a_page_break_takes_no_line() {
+    // "Before", a page break, then a bookmark start (Word writes the next heading's TOC bookmark
+    // there): the bookmark takes no room, so "After" starts at the top of page 2, as in Word.
+    let top_of_after = |bookmark: bool| {
+        let mut d = Document::from_text("Before\nAfter");
+        d.insert_text(&Pos::body(0, 6), "\u{000C}", &Default::default()).unwrap();
+        if bookmark {
+            let mark = InlineObject::BookmarkStart { name: "_Toc1".into() };
+            d.insert_object(&Pos::body(0, 7), mark, &Default::default()).unwrap();
+        }
+        let l = lay(&d);
+        let page = l.pages.last().unwrap();
+        let after = page.items.iter().find_map(|i| match i {
+            Placed::Lines { path, y, .. } if path.0 == [1] => Some(*y),
+            _ => None,
+        });
+        (l.pages.len(), after.map(|y| y - page.body.y))
+    };
+    assert_eq!(top_of_after(true), top_of_after(false));
+}
+
+#[test]
+fn a_page_break_then_a_new_page_makes_one_page() {
+    use wordcraft_doc::section::SectionProps;
+    // "Before", a paragraph of only a page break, then "After" starting a page by itself: a page
+    // break before, or a next-page section break carried by the break's own paragraph. Word's
+    // output for a report: the break's mark stays on the old page, and "After" starts the next.
+    let doc = |section_on_break: bool| {
+        let mut d = Document::from_text("Before\n\u{000C}\nAfter");
+        if section_on_break {
+            d.para_mut(StoryRef::Body, &Path::top(1)).unwrap().section = Some(Box::new(SectionProps::default()));
+        } else {
+            d.para_mut(StoryRef::Body, &Path::top(2)).unwrap().props.page_break_before = Some(true);
+        }
+        d
+    };
+    for section_on_break in [false, true] {
+        let l = lay(&doc(section_on_break));
+        let firsts: Vec<usize> = l.pages.iter().map(|p| p.first_block).collect();
+        assert_eq!(l.pages.len(), 2, "section break on the page break: {section_on_break}; pages start at blocks {firsts:?}");
+    }
+}
+
+#[test]
+fn page_numbers_can_restart_at_zero() {
+    // `w:pgNumType w:start="0"`: a cover page numbered 0, so the page after it reads 1.
+    let mut d = Document::from_text("Cover\u{000C}Contents");
+    d.last_section.page_num_start = Some(0);
+    let numbers: Vec<u32> = lay(&d).pages.iter().map(|p| p.number).collect();
+    assert_eq!(numbers, [0, 1]);
+}
+
+#[test]
 fn center_and_right_alignment() {
     let mut d = Document::from_text("abc\nabc\nabc");
     d.format_paragraphs(&Pos::body(1, 0), &Pos::body(1, 0), &|p| p.align = Some(Align::Center)).unwrap();
@@ -708,6 +761,25 @@ fn tabs_land_on_default_stops() {
     let l = lay(&d);
     let xb = l.caret(&Pos::body(0, 2)).unwrap().x;
     assert!((xb - (72.0 + 36.0)).abs() < 0.5, "{xb}");
+}
+
+/// Left of the margin Word's next default tab stop is the first multiple of the interval at or
+/// after the position (its arithmetic truncates toward zero), so a tab already on a stop stays
+/// put. Measured on Word: "a\t\tX" at -60 pt puts X at -36 pt (not 0), "\tX" starting at -72 pt
+/// leaves X at -72, at -60 moves it to -36; right of the margin the stops are as usual.
+/// Letterheads that line up a footer with tabs under a negative indent rely on it.
+#[test]
+fn tabs_left_of_the_margin_stay_on_a_default_stop() {
+    let x_of = |text: &str, indent: f32, off: usize| {
+        let mut d = Document::from_text(text);
+        d.format_paragraphs(&Pos::body(0, 0), &Pos::body(0, 0), &|p| p.indent_left = Some(indent)).unwrap();
+        lay(&d).caret(&Pos::body(0, off)).unwrap().x - 72.0
+    };
+    assert!((x_of("a\t\tX", -60.0, 3) - -36.0).abs() < 0.5, "second tab from a stop left of the margin: {}", x_of("a\t\tX", -60.0, 3));
+    assert!((x_of("\tX", -72.0, 1) - -72.0).abs() < 0.5, "leading tab on a stop: {}", x_of("\tX", -72.0, 1));
+    assert!((x_of("\tX", -60.0, 1) - -36.0).abs() < 0.5, "leading tab between stops: {}", x_of("\tX", -60.0, 1));
+    assert!((x_of("\t \tX", -60.0, 3) - 0.0).abs() < 0.5, "a space between the tabs: {}", x_of("\t \tX", -60.0, 3));
+    assert!((x_of("a\t\tX", 0.0, 3) - 72.0).abs() < 0.5, "right of the margin: {}", x_of("a\t\tX", 0.0, 3));
 }
 
 #[test]
@@ -736,6 +808,57 @@ fn lists_get_labels_and_indent() {
     assert_eq!(labels, vec!["1.", "2.", "3."]);
     let x = l.caret(&Pos::body(0, 0)).unwrap().x;
     assert!((x - 108.0).abs() < 0.5, "{x}");
+}
+
+#[test]
+fn a_numbered_heading_opening_with_a_page_break_takes_its_number_along() {
+    // "Before", then a numbered paragraph whose text opens with a page break: Word draws its
+    // number on the next page with the text, not alone at the bottom of the first.
+    let mut d = Document::from_text("Before\n\u{000C}Heading");
+    let id = d.numbering.add_list(wordcraft_doc::ListKind::Numbered);
+    d.format_paragraphs(&Pos::body(1, 0), &Pos::body(1, 1), &|p| p.numbering = Some(wordcraft_doc::props::NumRef { num: id, level: 0 })).unwrap();
+    let l = lay(&d);
+    let label_pages: Vec<usize> = l
+        .pages
+        .iter()
+        .enumerate()
+        .filter(|(_, pg)| {
+            flat(display::page_display(&d, pg, &Default::default())).iter().any(|x| matches!(x, display::Draw::Glyphs { text, .. } if text == "1."))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(label_pages, [1]);
+}
+
+#[test]
+fn russian_letter_list_labels_draw_cyrillic() {
+    // russianLower labelled items 1, 2, 3 instead of а), б), в).
+    use wordcraft_doc::section::NumFormat;
+    let mut d = Document::from_text("один\nдва\nтри");
+    let id = d.numbering.add_list(wordcraft_doc::ListKind::Numbered);
+    for a in &mut d.numbering.abstracts {
+        if let Some(l) = a.levels.first_mut() {
+            l.format = NumFormat::RussianLower;
+            l.text = "%1)".into();
+        }
+    }
+    d.format_paragraphs(&Pos::body(0, 0), &Pos::body(2, 3), &|p| p.numbering = Some(wordcraft_doc::props::NumRef { num: id, level: 0 })).unwrap();
+    let l = lay(&d);
+    let labels: Vec<(String, bool)> = l.pages[0]
+        .items
+        .iter()
+        .filter_map(|it| if let Placed::Lines { para, .. } = it { Some(para) } else { None })
+        .filter_map(|pl| {
+            let lab = pl.label.as_ref()?;
+            let drawn = lab.runs.iter().all(|r| {
+                let face = &pl.styles[r.style as usize].face;
+                let gids: Vec<u32> = lab.glyphs[r.glyphs.clone()].iter().map(|g| g.gid).collect();
+                r.text.chars().all(|c| gids.contains(&face.glyph_for(c)) && face.glyph_for(c) != 0)
+            });
+            Some((lab.text.clone(), drawn))
+        })
+        .collect();
+    assert_eq!(labels, [("а)".to_string(), true), ("б)".to_string(), true), ("в)".to_string(), true)]);
 }
 
 #[test]
@@ -4023,6 +4146,49 @@ fn autofit_handles_spanning_cells_long_words_and_empty_tables() {
 }
 
 #[test]
+fn text_overflowing_an_exact_row_is_clipped_to_it() {
+    use wordcraft_doc::props::HeightRule;
+    // An exactly 12 pt row holding three lines: Word shows what fits and cuts the rest at the row's
+    // edge, rather than drawing it over the rows below.
+    let mut t = Table::new(2, 1, 200.0);
+    t.rows[0].props.height = Some(12.0);
+    t.rows[0].props.height_rule = HeightRule::Exact;
+    t.rows[0].cells[0].blocks =
+        ["one", "two", "three"].iter().map(|s| wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text(s, Default::default()))).collect();
+    t.rows[1].cells[0].blocks = vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text("below", Default::default()))];
+    let mut d = Document::from_text("After");
+    d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+    let draws = display::page_display(&d, &lay(&d).pages[0], &Default::default());
+    let clipped = |want: &str| {
+        draws.iter().any(|x| match x {
+            display::Draw::Clip { items, .. } => {
+                flat(items.clone()).iter().any(|i| matches!(i, display::Draw::Glyphs { text, .. } if text.contains(want)))
+            }
+            _ => false,
+        })
+    };
+    assert!(clipped("three"), "the overflowing row's text is drawn inside a clip");
+    assert!(!clipped("below"), "a row that fits isn't clipped");
+}
+
+#[test]
+fn a_percentage_width_past_the_text_column_is_kept() {
+    // `w:tblW w:type="pct" w:w="6564"` (131.28%) with the left margin as a negative indent: a
+    // cover-page footer table that spans the page edge to edge.
+    let mut t = Table::new(1, 2, 234.0);
+    t.props.width_pct = Some(131.28);
+    t.props.indent = Some(-72.0);
+    for (c, s) in t.rows[0].cells.iter_mut().zip(["Left", "Right"]) {
+        c.blocks = vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text(s, Default::default()))];
+    }
+    let mut d = Document::from_text("After");
+    d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+    let [(x, _, _)] = para_at(&lay(&d), &[0, 0, 1, 0])[..] else { panic!("second cell missing") };
+    // Two equal columns of 614.4 pt from x = 0: the second starts past the middle of the page.
+    assert!(x > 307.0, "the second column starts at {x}");
+}
+
+#[test]
 fn a_floating_table_in_the_footer_leaves_the_footer_where_it_is() {
     use wordcraft_doc::para::Anchor;
     use wordcraft_doc::props::TableFloat;
@@ -6469,4 +6635,208 @@ fn paragraph_own_float_is_not_replaced_when_its_rest_wraps_in_the_next_column() 
     let (_, ranges) = shown_and_ranges(&l, 1);
     assert_contiguous(&ranges, d.para(StoryRef::Body, &Path::top(1)).map(|p| p.len()).unwrap_or(0));
     assert_clear_of(&line_boxes(&l, 0, 1, col2), r, "column 2");
+}
+
+/// "Straße" laid out with `f` applied to all of it: its first line's layout.
+fn strasse_with(f: &dyn Fn(&mut wordcraft_doc::props::CharProps)) -> ParaLayout {
+    let mut d = Document::from_text("Straße");
+    d.format_range(&Pos::body(0, 0), &Pos::body(0, "Straße".len()), f).unwrap();
+    let l = lay(&d);
+    l.pages[0].items.iter().find_map(|it| if let Placed::Lines { para, .. } = it { Some((**para).clone()) } else { None }).expect("a laid-out line")
+}
+
+/// Text clusters of the first line: (start, end, glyph ids, left x, advance).
+fn text_clusters(pl: &ParaLayout) -> Vec<(usize, usize, Vec<u32>, f32, f32)> {
+    let line = &pl.lines[0];
+    (line.c0..line.c1)
+        .filter(|&k| pl.clusters[k].kind == para::ClKind::Text)
+        .map(|k| {
+            let c = &pl.clusters[k];
+            let gids = pl.glyphs[c.g0 as usize..c.g1 as usize].iter().map(|g| g.gid).collect();
+            (c.start, c.end, gids, line.cl_left(k).unwrap(), c.adv)
+        })
+        .collect()
+}
+
+/// All Caps and Small Caps draw ß as SS, as Word does, and the ß stays one character for the
+/// caret, selection and hit testing (#1581).
+#[test]
+fn caps_draw_sharp_s_as_two_capitals_in_one_cluster() {
+    let width = |pl: &ParaLayout| text_clusters(pl).iter().map(|c| c.4).sum::<f32>();
+    let plain_strase = {
+        let d = Document::from_text("STRASE");
+        let l = lay(&d);
+        let pl = l.pages[0].items.iter().find_map(|it| if let Placed::Lines { para, .. } = it { Some((**para).clone()) } else { None }).unwrap();
+        width(&pl)
+    };
+    let caps: &dyn Fn(&mut wordcraft_doc::props::CharProps) = &|c| c.caps = Some(true);
+    let small: &dyn Fn(&mut wordcraft_doc::props::CharProps) = &|c| c.small_caps = Some(true);
+    for (name, f) in [("All Caps", caps), ("Small Caps", small)] {
+        let pl = strasse_with(f);
+        let cl = text_clusters(&pl);
+        let glyphs: usize = cl.iter().map(|c| c.2.len()).sum();
+        assert_eq!(glyphs, 7, "{name}: S T R A S S E is seven glyphs: {cl:?}");
+        assert_eq!(cl.len(), 6, "{name}: six source characters, six clusters: {cl:?}");
+        let ss = cl.iter().find(|c| c.0 == 4).expect("a cluster for ß");
+        assert_eq!(ss.1, 6, "{name}: the ß cluster covers exactly the ß");
+        // Both glyphs drawn for ß are the S that starts the word.
+        let s_gid = cl.first().and_then(|c| c.2.first().copied());
+        assert_eq!(ss.2.len(), 2, "{name}: ß draws two glyphs");
+        assert!(ss.2.iter().all(|g| Some(*g) == s_gid), "{name}: both glyphs are S");
+        if name == "All Caps" {
+            assert!(width(&pl) > plain_strase + 1.0, "All Caps: STRASSE is wider than STRASE: {} vs {plain_strase}", width(&pl));
+        }
+        // Caret stops: one before each source character, and the end; none inside ß.
+        assert_eq!(pl.line_offsets(0), vec![0, 1, 2, 3, 4, 6, 7], "{name}");
+        // A click on the first S lands before the ß, on the second S after it.
+        assert_eq!(pl.off_at_x(0, ss.3 + ss.4 * 0.25), 4, "{name}: click on the first S");
+        assert_eq!(pl.off_at_x(0, ss.3 + ss.4 * 0.75), 6, "{name}: click on the second S");
+        if name == "Small Caps" {
+            // The ß is a lowercase letter: drawn at the small-caps size, like the "t", not
+            // at the size of the capital S that starts the word.
+            let style = |off: usize| pl.clusters.iter().find(|c| c.start == off).map(|c| c.style);
+            assert_eq!(style(4), style(1), "Small Caps: ß is scaled like t");
+            assert_ne!(style(4), style(0), "Small Caps: ß is not the size of the first S");
+        }
+    }
+    // Without caps, ß is one glyph of its own.
+    let pl = strasse_with(&|c| c.bold = Some(false));
+    let cl = text_clusters(&pl);
+    assert_eq!(cl.len(), 6);
+    assert_eq!(cl.iter().map(|c| c.2.len()).sum::<usize>(), 6, "{cl:?}");
+}
+
+/// A caps run in a symbol font draws each code as its symbol: ß never becomes two glyphs (#1581).
+#[test]
+fn caps_in_a_symbol_font_never_expand_characters() {
+    let pl = strasse_with(&|c| {
+        c.caps = Some(true);
+        c.font = Some("Wingdings".into());
+    });
+    let cl = text_clusters(&pl);
+    assert_eq!(cl.len(), 6, "{cl:?}");
+    let ss = cl.iter().find(|c| c.0 == 4).expect("a cluster for the ß code");
+    assert_eq!((ss.1, ss.2.len()), (6, 1), "the ß code is one symbol: {cl:?}");
+}
+
+/// #1320: a section's vertical alignment (`w:vAlign`, ECMA-376 §17.6.23). Justified shares the
+/// room left on each page out equally between the page's blocks, so the first line stays at the
+/// top margin and the last one sits on the bottom margin (Word for Mac 16.113.4): a partly filled
+/// last page too, and a page ending in a manual page break, where the paragraph holding the break
+/// is the page's last block. A page with one block keeps it at the top.
+#[test]
+fn section_vertical_alignment_top_center_justify_bottom() {
+    use wordcraft_doc::section::PageVAlign;
+    let para = |text: &str| {
+        let mut p = wordcraft_doc::Paragraph::with_text(text, Default::default());
+        p.props = ParaProps { space_before: Some(0.0), space_after: Some(0.0), ..Default::default() };
+        wordcraft_doc::para_block(p)
+    };
+    let laid = |texts: &[&str], va: PageVAlign| {
+        let mut d = Document::new();
+        d.body = texts.iter().map(|t| para(t)).collect();
+        d.last_section.valign = va;
+        lay(&d)
+    };
+    let three = ["One", "Two", "Three"];
+    let top = laid(&three, PageVAlign::Top);
+    let body = top.pages[0].body;
+    let (body_top, body_bottom) = (body.y, body.y + body.h);
+    let t = para_boxes(&top);
+    let h: f32 = t[2].3 - t[0].2;
+    assert!((t[0].2 - body_top).abs() < 0.5, "top: at the top margin {t:?} {body:?}");
+    let c = para_boxes(&laid(&three, PageVAlign::Center));
+    let room = body_bottom - body_top - h;
+    assert!((c[0].2 - (body_top + room / 2.0)).abs() < 0.5, "center: {c:?}");
+    assert!((c[1].2 - c[0].3).abs() < 0.05 && (c[2].2 - c[1].3).abs() < 0.05, "center keeps the blocks together: {c:?}");
+    let b = para_boxes(&laid(&three, PageVAlign::Bottom));
+    assert!((b[2].3 - body_bottom).abs() < 0.5, "bottom: {b:?} {body:?}");
+    // Justified: first at the top, last on the bottom margin, equal gaps.
+    let j = para_boxes(&laid(&three, PageVAlign::Justify));
+    assert!((j[0].2 - body_top).abs() < 0.5, "justify: first line at the top margin {j:?}");
+    assert!((j[2].3 - body_bottom).abs() < 0.5, "justify: last line on the bottom margin {j:?} {body:?}");
+    let (g1, g2) = (j[1].2 - j[0].3, j[2].2 - j[1].3);
+    assert!(g1 > 100.0 && (g1 - g2).abs() < 0.05, "justify: equal gaps {g1} {g2}");
+    // One block on the page stays at the top.
+    let one = para_boxes(&laid(&["Only"], PageVAlign::Justify));
+    assert!((one[0].2 - body_top).abs() < 0.5, "a single block stays at the top: {one:?}");
+    // A manual page break: its paragraph is page 1's last block; "Four" alone on page 2 stays up.
+    let brk = wordcraft_doc::para::PAGE_BREAK.to_string();
+    let p = para_boxes(&laid(&["One", "Two", "Three", &brk, "Four"], PageVAlign::Justify));
+    assert_eq!(p.iter().map(|e| e.0).collect::<Vec<_>>(), vec![0, 0, 0, 0, 1], "{p:?}");
+    assert!((p[0].2 - body_top).abs() < 0.5, "{p:?}");
+    assert!((p[3].3 - body_bottom).abs() < 0.5, "the break's paragraph sits on the bottom margin: {p:?}");
+    let gaps: Vec<f32> = (1..4).map(|i| p[i].2 - p[i - 1].3).collect();
+    assert!(gaps.iter().all(|g| (g - gaps[0]).abs() < 0.05 && *g > 50.0), "{gaps:?}");
+    assert!((p[4].2 - body_top).abs() < 0.5, "Four keeps to the top of page 2: {p:?}");
+}
+
+/// #1320 review: a section's last page takes that section's vertical alignment, not the next
+/// section's (Justified then Top: spread; Top then Justified: stays at the top).
+#[test]
+fn a_sections_last_page_keeps_its_own_vertical_alignment() {
+    use wordcraft_doc::section::{PageVAlign, SectionProps};
+    let para = |text: &str| {
+        let mut p = wordcraft_doc::Paragraph::with_text(text, Default::default());
+        p.props = ParaProps { space_before: Some(0.0), space_after: Some(0.0), ..Default::default() };
+        wordcraft_doc::para_block(p)
+    };
+    let laid = |first: PageVAlign, second: PageVAlign| {
+        let mut d = Document::new();
+        d.body = ["One", "Two", "Three", "Next section"].iter().map(|t| para(t)).collect();
+        d.para_mut(StoryRef::Body, &Path::top(2)).unwrap().section = Some(Box::new(SectionProps { valign: first, ..Default::default() }));
+        d.last_section.valign = second;
+        lay(&d)
+    };
+    let l = laid(PageVAlign::Justify, PageVAlign::Top);
+    let body = l.pages[0].body;
+    let b = para_boxes(&l);
+    assert_eq!(b.iter().map(|e| e.0).collect::<Vec<_>>(), vec![0, 0, 0, 1]);
+    assert!((b[0].2 - body.y).abs() < 0.5 && (b[2].3 - (body.y + body.h)).abs() < 0.5, "section 1 justified: {b:?} {body:?}");
+    assert!((b[3].2 - body.y).abs() < 0.5, "section 2 at the top: {b:?}");
+    let b = para_boxes(&laid(PageVAlign::Top, PageVAlign::Justify));
+    assert!((b[1].2 - b[0].3).abs() < 0.05 && (b[2].2 - b[1].3).abs() < 0.05, "section 1 stays at the top: {b:?}");
+}
+
+/// Word for Mac 16.113.4 (user-checked, #1320): a justified page keeps its last paragraph's space
+/// after inside the text area, so "Three" with 72 pt after sits 72 pt above the bottom margin.
+#[test]
+fn justified_page_keeps_the_last_paragraphs_space_after() {
+    let mut d = Document::new();
+    d.body = ["One", "Two", "Three"]
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let mut p = wordcraft_doc::Paragraph::with_text(t, Default::default());
+            p.props = ParaProps { space_before: Some(0.0), space_after: Some(if i == 2 { 72.0 } else { 0.0 }), ..Default::default() };
+            wordcraft_doc::para_block(p)
+        })
+        .collect();
+    d.last_section.valign = wordcraft_doc::section::PageVAlign::Justify;
+    let l = lay(&d);
+    let body = l.pages[0].body;
+    let b = para_boxes(&l);
+    assert!((b[0].2 - body.y).abs() < 0.5, "{b:?}");
+    assert!((body.y + body.h - b[2].3 - 72.0).abs() < 0.5, "72 pt left under Three: {b:?} {body:?}");
+    assert!((b[1].2 - b[0].3 - (b[2].2 - b[1].3)).abs() < 0.05, "equal gaps: {b:?}");
+}
+
+/// #1320: a justified page with several newspaper columns stays at the top (not spread).
+#[test]
+fn justified_multi_column_pages_stay_at_the_top() {
+    let laid = |va| {
+        let mut d = two_column_section(wordcraft_doc::section::SectionStart::NextPage, Vec::new());
+        d.para_mut(StoryRef::Body, &Path::top(9)).unwrap().section.as_mut().unwrap().valign = va;
+        para_boxes(&lay(&d))
+    };
+    use wordcraft_doc::section::PageVAlign;
+    assert_eq!(laid(PageVAlign::Justify), laid(PageVAlign::Top));
+    // The document's last section in two columns.
+    let last = |va| {
+        let mut d = Document::from_text("One\nTwo\nThree\nFour");
+        d.last_section.columns.count = 2;
+        d.last_section.valign = va;
+        para_boxes(&lay(&d))
+    };
+    assert_eq!(last(PageVAlign::Justify), last(PageVAlign::Top));
 }

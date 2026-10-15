@@ -188,7 +188,11 @@ fn read_bytes(name: &str, bytes: &[u8], password: Option<&str>, page: &wordcraft
         }
         // Plain text goes through the formats importer: BOMs, unmarked UTF-16, Windows-1252.
         "txt" | "text" => wordcraft_formats::txt::import_on(bytes, page),
-        "json" => serde_json::from_slice::<Document>(bytes).map_err(|e| format!("{name}: {e}"))?,
+        "json" => {
+            let mut d = serde_json::from_slice::<Document>(bytes).map_err(|e| format!("{name}: {e}"))?;
+            d.normalize_runs();
+            d
+        }
         other => match crate::io_ext::open(other, bytes, page) {
             Some(r) => r?,
             None => return open_by_content(name, other, bytes, password, page),
@@ -485,6 +489,18 @@ pub fn read_file_capped(path: &str, max: u64, what: &str) -> Result<Vec<u8>, Str
     std::fs::read(path).map_err(|e| format!("{path}: {e}"))
 }
 
+/// The first `max` bytes of the file at `path` (fewer when it is shorter), inside the automation
+/// read root when there is one: enough to tell a file's format by its start.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_file_head(path: &str, max: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    crate::file_access::check_read(path)?;
+    let f = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut head = Vec::new();
+    f.take(max).read_to_end(&mut head).map_err(|e| format!("{path}: {e}"))?;
+    Ok(head)
+}
+
 /// Rename without replacing another file, respecting both automation access roots.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn rename_file(source: &std::path::Path, destination: &std::path::Path) -> Result<(), String> {
@@ -517,18 +533,6 @@ fn only_case_differs(source: &std::path::Path, destination: &std::path::Path) ->
     }
     let dir = if dir.as_os_str().is_empty() { std::path::Path::new(".") } else { dir };
     std::fs::read_dir(dir).is_ok_and(|entries| entries.filter_map(Result::ok).all(|entry| entry.file_name() != to))
-}
-
-/// The first `max` bytes of the file at `path` (fewer when it is shorter), inside the automation
-/// read root when there is one: enough to tell a file's format by its start.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn read_file_head(path: &str, max: u64) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    crate::file_access::check_read(path)?;
-    let f = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
-    let mut head = Vec::new();
-    f.take(max).read_to_end(&mut head).map_err(|e| format!("{path}: {e}"))?;
-    Ok(head)
 }
 
 /// Write `bytes` to the file at `path`, inside the automation write root when there is one.

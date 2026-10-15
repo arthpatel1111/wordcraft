@@ -1924,7 +1924,7 @@ fn vml_preset_shapes_are_drawn() {
     assert_eq!(shape(3), Some((ShapeKind::Triangle, 20.0, 10.0, None, black, 0.75, true, false)));
     // A preset holding text keeps its geometry around the text.
     assert_eq!(shape(4), Some((ShapeKind::Diamond, 50.0, 50.0, Some(Rgb(0xFF, 0xFF, 0)), black, 0.75, true, true)));
-    assert_eq!(shape(5), Some((ShapeKind::Triangle, 20.0, 20.0, Some(Rgb(0xFF, 0, 0)), black, 0.75, true, false)));
+    assert_eq!(shape(5), Some((ShapeKind::RightTriangle, 20.0, 20.0, Some(Rgb(0xFF, 0, 0)), black, 0.75, true, false)));
     assert_eq!(shape(6), None);
     assert_eq!(shape(7), Some((ShapeKind::Line, 40.0, 10.0, None, black, 0.75, true, false)));
     assert_eq!(shape(8), Some((ShapeKind::Line, 30.0, 15.0, None, Some(Rgb(0xFF, 0, 0)), 0.75, false, false)));
@@ -2565,6 +2565,21 @@ fn text_frames_read_and_round_trip() {
     assert_eq!(q[0].props.frame, p[0].props.frame);
     assert_eq!(q[1].props.frame, p[1].props.frame);
     assert!(q.iter().any(|x| x.props.drop_cap == Some(2) && x.props.frame.is_none()));
+}
+
+/// A right triangle (`rtTriangle`) has its right angle at the bottom left: a cover page's white
+/// corner cut-outs drawn as isosceles triangles pointed the wrong way.
+#[test]
+fn a_right_triangle_keeps_its_right_angle() {
+    let body = anchored_wsp("Corner", 1270000, 635000, r#"<a:prstGeom prst="rtTriangle"><a:avLst/></a:prstGeom>"#, "", "<wps:cNvSpPr/>");
+    let d = read_body(&format!("<w:p>{body}</w:p>"));
+    let kind = |d: &Document| match &paras(d)[0].objects[0] {
+        InlineObject::Shape { kind, .. } => *kind,
+        o => panic!("{o:?}"),
+    };
+    assert_eq!(kind(&d), ShapeKind::RightTriangle);
+    let saved = wordcraft_docx::write(&d).unwrap();
+    assert_eq!(kind(&wordcraft_docx::read(&saved).unwrap()), ShapeKind::RightTriangle);
 }
 
 #[test]
